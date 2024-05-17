@@ -1,0 +1,170 @@
+parameters:
+- name: RootId
+  type: string
+- name: RootName
+  type: string
+- name: AppName
+  type: string
+- name: EnvironmentName
+  type: string
+- name: EnvironmentLocation
+  type: string
+- name: EnvironmentServiceConnection
+  type: string
+- name: TerraformVersion
+  type: string
+- name: ApproverEmail
+  type: string
+- name: TerraformVariables
+  type: object
+  default: []
+
+jobs:
+
+  #----------------------------------
+  - job: plan_${{ parameters.EnvironmentName }}
+    displayName: Terraform Plan
+  #----------------------------------
+    variables:
+      workingDir: $(Build.SourcesDirectory)/tf_${{ parameters.EnvironmentName }}
+    steps:
+
+    #.........................
+    - download: current
+      displayName: Download Terraform files
+    #.........................
+      artifact: tf
+
+    #.........................
+    - task: TerraformInstaller@0
+      displayName: Install Terraform $(TerraformVersion)
+    #.........................
+      inputs:
+        terraformVersion: $(TerraformVersion)
+
+    #.........................
+    - task: ExtractFiles@1
+      displayName: Extract Terraform files
+    #.........................
+      inputs:
+        archiveFilePatterns: '$(Pipeline.Workspace)/tf/tf.tar.gz'
+        destinationFolder: '$(workingDir)'
+
+    #.........................
+    - task: Cmdline@2
+      displayName: Prepare Terraform Workspace
+    #.........................
+      inputs:
+        script: |
+          cd $(workingDir)
+          terraform workspace new ${{ parameters.EnvironmentName }} || terraform workspace select ${{ parameters.EnvironmentName }}
+          cat << EOF > .tfvars.json
+          ${JSON}
+          EOF
+          cat .tfvars.json
+      env:
+        JSON: ${{ convertToJson(parameters.TerraformVariables) }}
+
+    #.........................
+    - task: TerraformTaskV4@4
+      displayName: Terraform Plan
+    #.........................
+      name: tf_plan
+      inputs:
+        command: plan
+        workingDirectory: $(workingDir)
+        environmentServiceNameAzureRm: ${{ parameters.EnvironmentServiceConnection }}
+        publishPlanResults: true
+        commandOptions: -input=false -out tf.plan -var-file=.tfvars.json
+      env:
+        TF_VAR_root_id: ${{ parameters.RootId }}
+        TF_VAR_root_name: ${{ parameters.RootName }}
+        TF_VAR_app_name: ${{ parameters.AppName }}
+        TF_VAR_environment_name: ${{ parameters.EnvironmentName }}
+        TF_VAR_environment_location: ${{ parameters.EnvironmentLocation }}
+        TF_VAR_terraform_version: $(TerraformVersion)
+        
+
+    #.........................
+    - task: ArchiveFiles@2
+      displayName: Archive Terraform files
+    #.........................
+      inputs:
+        rootFolderOrFile: '$(workingDir)'
+        includeRootFolder: false
+        archiveType: tar
+        tarCompression: gzip
+        archiveFile: $(Build.ArtifactStagingDirectory)/tf.tar.gz
+        replaceExistingArchive: true
+
+    #.........................
+    - task: PublishBuildArtifacts@1
+      displayName: Publish Terraform files as artifact
+    #.........................
+      inputs:
+        PathToPublish: $(Build.ArtifactStagingDirectory)
+        ArtifactName: tf_${{ parameters.EnvironmentName }}
+        publishLocation: Container
+
+  #-------------------------
+  - job: deployment_approval_${{ parameters.EnvironmentName }}
+    displayName: Wait for approval to deploy
+  #-------------------------
+    pool: server
+    dependsOn: plan_${{ parameters.EnvironmentName }}
+    condition: and(succeeded(), eq(dependencies.plan_${{ parameters.EnvironmentName }}.outputs['tf_plan.changesPresent'], 'true'))
+    steps:
+
+    #.........................
+    - task: ManualValidation@0
+      displayName: Approve Deployment
+    #.........................
+      inputs:
+        instructions: |
+          Antes de aprovar a implantação, não se esqueça 
+          de verificar se o Terraform Plan está correto.
+        emailRecipients: $(ApproverEmail)
+        timeoutInMinutes: 1440
+        onTimeout: reject
+
+  #-------------------------
+  - deployment: deploy_${{ parameters.EnvironmentName }}
+    displayName: Terraform Apply
+  #-------------------------
+    environment: ${{ parameters.RootId }}_${{ parameters.AppName }}_${{ parameters.EnvironmentLocation }}_${{ parameters.EnvironmentName }}
+    dependsOn: ['plan_${{ parameters.EnvironmentName }}', 'deployment_approval_${{ parameters.EnvironmentName }}']
+    condition: and(succeeded(), eq(dependencies.plan_${{ parameters.EnvironmentName }}.outputs['tf_plan.changesPresent'], 'true'))
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          #.........................
+          - download: current
+            displayName: Download Terraform files
+          #.........................
+            artifact: tf_${{ parameters.EnvironmentName }}
+
+          #.........................
+          - task: TerraformInstaller@0
+            displayName: Install Terraform $(TerraformVersion)
+          #.........................
+            inputs:
+              terraformVersion: $(TerraformVersion)
+
+          #.........................
+          - task: ExtractFiles@1
+            displayName: Extract Terraform files
+          #.........................
+            inputs:
+              archiveFilePatterns: '$(Pipeline.Workspace)/tf_${{ parameters.EnvironmentName }}/tf.tar.gz'
+              destinationFolder: '$(Build.SourcesDirectory)/tf'
+
+          #.........................
+          - task: TerraformTaskV4@4
+            displayName: Terraform Apply
+          #.........................
+            inputs:
+              command: apply
+              workingDirectory: $(Build.SourcesDirectory)/tf
+              environmentServiceNameAzureRm: ${{ parameters.EnvironmentServiceConnection }}
+              commandOptions: -auto-approve -input=false tf.plan

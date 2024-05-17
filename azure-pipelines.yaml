@@ -1,0 +1,99 @@
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    exclude:
+    - '**/*.md'
+
+pool:
+  vmImage: ubuntu-latest
+
+# parameters:
+
+variables:
+
+  # Global variables
+  RootId: 
+  RootName: 
+  ServiceName: 
+  DefaultLocation: us-east-1
+  #TF_LOG: DEBUG
+
+  # Service Connections
+  TfStateServiceConnection: 
+  ServiceConnection_Dev: 
+
+  # Terraform State settings
+  TfStateResourceGroupName: $(RootId)-lz-terraform-rg
+  TfStateLocation: southcentralus
+  TfStateStorageAccountName: $(RootId)lzterraform
+  TfStateContainerName: tfstate
+  TfStateKeyName: $(RootId)_$(AppName).tfstate
+
+  # Component versions
+  TerraformVersion: '1.5.2'
+  TfLintVersion: '0.45.0'
+  CheckovVersion: '2.3.110'
+
+  # Terraform environment settings (common)
+  LandingZoneLocation: $(DefaultLocation)
+
+  # Terraform environment settings (Prod)
+  Prd_VnetAddressSpace:
+
+###########################################################################
+
+stages:
+
+#=========================
+- stage: build_terraform
+  displayName: Build Terraform
+#=========================
+  jobs:
+  - template: .azuredevops/templates/terraform-build.yml
+    parameters:
+      TerraformVersion: $(TerraformVersion)
+      TfStateServiceConnection: $(TfStateServiceConnection)
+      TfStateResourceGroupName: $(TfStateResourceGroupName)
+      TfStateLocation: $(TfStateLocation)
+      TfStateStorageAccountName: $(TfStateStorageAccountName)
+      TfStateContainerName: $(TfStateContainerName)
+      TfStateKeyName: $(TfStateKeyName)
+      TfLintVersion: $(TfLintVersion)
+      CheckovVersion: $(CheckovVersion)
+      EnableTfLint: true
+      EnableCheckov: true
+
+#=========================
+- stage: deploy_dev
+  displayName: Deploy (Dev)
+#=========================
+  dependsOn: build_terraform
+  condition: succeeded()
+  jobs:
+  - template: .azuredevops/templates/terraform-deploy.yml
+    parameters:
+      RootId: $(RootId)
+      RootName: $(RootName)
+      AppName: $(AppName)
+      EnvironmentName: dev
+      EnvironmentLocation: $(LandingZoneLocation)
+      EnvironmentServiceConnection: $(ServiceConnection_Dev)
+      ApproverEmail: $(ApproverEmail)
+      TerraformVersion: $(TerraformVersion)
+      TerraformVariables:
+        # vNet and Subnet
+        env1: 
+        env2: 
+
+
+ 
+ 
+                            
+                                                                                               
+
+
+                 
+  
+

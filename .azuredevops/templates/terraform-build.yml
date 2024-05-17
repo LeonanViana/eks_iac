@@ -1,0 +1,143 @@
+parameters:
+- name: TerraformVersion
+  type: string
+- name: TfStateServiceConnection
+  type: string
+- name: TfStateResourceGroupName
+  type: string
+- name: TfStateLocation
+  type: string
+- name: TfStateStorageAccountName
+  type: string
+- name: TfStateContainerName
+  type: string
+- name: TfStateKeyName
+  type: string
+- name: EnableTfLint
+  type: boolean
+  default: true
+- name: TfLintVersion
+  type: string
+- name: EnableCheckov
+  type: boolean
+  default: true
+- name: CheckovVersion
+  type: string
+
+jobs:
+
+  #-------------------------
+  - job: create_sa
+    displayName: Prepare Storage Account for Terraform State
+  #-------------------------
+    steps:
+
+    #.........................
+    - task: AzureCLI@2
+      displayName: Run Bicep
+    #.........................
+      name: bicep
+      inputs:
+        azureSubscription: ${{ parameters.TfStateServiceConnection }}
+        workingDirectory: bicep
+        scriptType: bash
+        scriptLocation: inlineScript
+        outputVariable: TfStateConnectionString
+        inlineScript: |
+          # Break script on error
+          set -e
+
+          # Generate deployment name
+          DEPLOYMENTNAME="AzurePipelines_Bicep_$(date +%s)"
+          echo "# Deployment name: $DEPLOYMENTNAME"
+
+          echo '# Create resource group (if needed)'
+          az group create -n $TFSTATERESOURCEGROUPNAME --location $TFSTATELOCATION
+
+          echo '# Deploy Bicep template'
+          az deployment group create -n $DEPLOYMENTNAME -g $TFSTATERESOURCEGROUPNAME --template-file main.bicep --parameters \
+            storageAccountName=$TFSTATESTORAGEACCOUNTNAME \
+            containerName=$TFSTATECONTAINERNAME
+
+          echo '# Get connection string for storage account'
+          CONNSTRING=$(az deployment group show -n $DEPLOYMENTNAME -g $TFSTATERESOURCEGROUPNAME \
+            --query properties.outputs.connectionString.value -o tsv)
+
+          echo '# Create output variable'
+          echo "##vso[task.setvariable variable=TfStateConnectionString;isOutput=true,isSecret=true]$CONNSTRING"
+
+  #----------------------------------
+  - job: tf_validate
+    displayName: Terraform Lint & Validate
+  #----------------------------------
+    dependsOn: create_sa
+    variables:
+      TfStateConnectionString: $[ dependencies.create_sa.outputs['bicep.TfStateConnectionString'] ]
+    steps:
+
+    #.........................
+    - task: TerraformInstaller@0
+      displayName: Install Terraform ${{ parameters.TerraformVersion }}
+    #.........................
+      inputs:
+        terraformVersion: ${{ parameters.TerraformVersion }}
+    
+    #.........................
+    - task: TerraformTaskV4@4
+      displayName: Terraform Init
+    #.........................
+      inputs:
+        command: init
+        workingDirectory: tf
+        backendType: azurerm
+        backendServiceArm: ${{ parameters.TfStateServiceConnection }}
+        backendAzureRmResourceGroupName: ${{ parameters.TfStateResourceGroupName }}
+        backendAzureRmStorageAccountName: ${{ parameters.TfStateStorageAccountName }}
+        backendAzureRmContainerName: ${{ parameters.TfStateContainerName }}
+        backendAzureRmKey: ${{ parameters.TfStateKeyName }}
+        backendAzureRmConnectionString: $(TfStateConnectionString)
+
+    #.........................
+    - task: TerraformTaskV4@4
+      displayName: Terraform Validate
+    #.........................
+      inputs:
+        command: validate
+        workingDirectory: tf
+
+    - ${{ if eq(parameters.EnableTfLint, true) }}: 
+      #.........................
+      - template: terraform-build-tflint.yml
+      #.........................
+        parameters:
+          TfLintVersion: ${{ parameters.TfLintVersion }}
+          WorkingDir: tf
+
+    - ${{ if eq(parameters.EnableCheckov, 'true') }}: 
+      #.........................
+      - template: terraform-build-checkov.yml
+      #.........................
+        parameters:
+          CheckovVersion: ${{ parameters.CheckovVersion }}
+          WorkingDir: tf
+
+    #.........................
+    - task: ArchiveFiles@2
+      displayName: Archive Terraform files
+    #.........................
+      inputs:
+        rootFolderOrFile: tf
+        includeRootFolder: false
+        archiveType: tar
+        tarCompression: gzip
+        archiveFile: $(Build.ArtifactStagingDirectory)/tf.tar.gz
+        replaceExistingArchive: true
+
+    #.........................
+    - task: PublishBuildArtifacts@1
+      displayName: Publish Terraform files as artifact
+    #.........................
+      inputs:
+        PathToPublish: $(Build.ArtifactStagingDirectory)
+        ArtifactName: tf
+        publishLocation: Container

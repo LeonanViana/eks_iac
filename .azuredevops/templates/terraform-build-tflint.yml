@@ -1,0 +1,50 @@
+parameters:
+- name: TfLintVersion
+  type: string
+  default: ''
+- name: WorkingDir
+  type: string
+  default: '.'
+
+steps:
+
+# #.........................
+# - task: Cache@2
+#   displayName: Restore tflint $(TfLintVersion) from cache
+# #.........................
+#   name: tflint_restore_cache
+#   inputs:
+#     key: '"tflint $(TfLintVersion)" | $(Agent.OS)'
+#     path: $(Agent.ToolsDirectory)/tflint
+#     cacheHitVar: CACHE_RESTORED
+    
+#.........................
+- task: CmdLine@2
+  displayName: Install tflint $(TfLintVersion)
+#.........................
+  condition: and(succeeded(), ne(variables.CACHE_RESTORED, 'true'))
+  inputs:
+    targetType: 'inline'
+    script: |
+      cd ${AGENT_TOOLSDIRECTORY}
+      curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+#.........................
+- task: CmdLine@2
+  displayName: Add tflint to PATH
+#.........................
+  inputs:
+    targetType: 'inline'
+    script: |
+      echo "##vso[task.prependpath]${AGENT_TOOLSDIRECTORY}/tflint"
+
+#.........................
+- task: CmdLine@2
+  displayName: Run tflint
+#.........................
+  inputs:
+    targetType: 'inline'
+    script: |
+      cd "${{ parameters.WorkingDir }}"
+      tflint --init
+      tflint --chdir .

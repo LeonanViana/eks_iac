@@ -1,0 +1,52 @@
+parameters:
+- name: CheckovVersion
+  type: string
+  default: ''
+- name: WorkingDir
+  type: string
+  default: '.'
+
+steps:
+
+#.........................
+- task: Cache@2
+  displayName: Restore checkov $(CheckovVersion) from cache
+#.........................
+  name: checkov_restore_cache
+  inputs:
+    key: '"checkov $(CheckovVersion)" | $(Agent.OS)'
+    path: $(Agent.ToolsDirectory)/checkov
+    cacheHitVar: CACHE_RESTORED
+
+#.........................
+- task: CmdLine@2
+  displayName: Install checkov $(CheckovVersion)
+#.........................
+  condition: and(succeeded(), ne(variables.CACHE_RESTORED, 'true'))
+  inputs:
+    targetType: 'inline'
+    script: |
+      CHECKOV_DIR=${AGENT_TOOLSDIRECTORY}/checkov
+      mkdir -p $CHECKOV_DIR
+      python3 -m venv $CHECKOV_DIR
+      source $CHECKOV_DIR/bin/activate
+      pip3 install checkov==${{ parameters.CheckovVersion }}
+      echo "##vso[task.prependpath]$CHECKOV_DIR/bin"
+
+#.........................
+- task: CmdLine@2
+  displayName: Add checkov to PATH
+#.........................
+  inputs:
+    targetType: 'inline'
+    script: |
+      CHECKOV_DIR=${AGENT_TOOLSDIRECTORY}/checkov
+      echo "##vso[task.prependpath]$CHECKOV_DIR/bin"
+
+#.........................
+- task: CmdLine@2
+  displayName: Run checkov
+#.........................
+  inputs:
+    targetType: 'inline'
+    script: checkov --directory "${{ parameters.WorkingDir }}" --framework terraform
